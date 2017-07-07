@@ -1,0 +1,102 @@
+---
+title: "Understanding_MDS"
+author: "Lucas Boatwright"
+date: "7/7/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I created this R markdown to more fully understand what is happening in the plotMDS function from limma. Specifically, I want to see the few lines responsible for determining the pairwise top 500 genes of choice.
+
+```{r libs}
+library(limma)
+library(edgeR)
+```
+
+Read in data and filter. Data is from the NCBI database (accession code GSE71761), which was aligned to a transcriptome.
+
+```{r read_data}
+setwd("/Users/12345/Documents/Lab/Spiny_project/Spiny_voom_analysis/Mus_ear_8-22-16")
+df = read.table("mus_ear_genes_counts_matrix.txt")
+genes = DGEList(df, remove.zeros = TRUE)
+
+keep <- rowSums(cpm(genes) > cpm(10,mean(genes$samples$lib.size))[1]) >= 15
+genes <- genes[keep,]
+```
+
+I typically use voom to assess differential expression and pass the voom expression matrix to plotMDS. So, I'm doing the same here.
+
+```{r voom, echo=FALSE}
+boxplot(cpm(genes$counts + 1, log=TRUE))
+
+trt = factor(c(1,1,1,2,2,2,3,3,3,4,4,4,5,5,5), labels=c("Day0","Day5","Day10","Day15","Day20"))
+design=model.matrix(~0 + trt)
+
+voom=voom(genes, design, plot=TRUE)
+
+```
+```{r MDS, echo=FALSE}
+# Defaults to top 500 genes and pairwise gene selection
+mds <- plotMDS(voom, main="MDS plot")
+# Tail is a better assessment of the distance matrix as
+# the whole top right is composed of zeros (would be symmetric otherwise)
+tail(mds$distance.matrix)
+
+# Classical multidimensional scaling (MDS) of a data matrix. Also known as 
+# principal coordinates analysis (Gower, 1966). 
+
+# By default we've selected to keep the top two principal coordinates
+print(mds$cmdscale.out)
+
+```
+
+Next, I do a line-by-line examination of the pairwise part of plotMDS. This is the part that I found hardest to visualize.
+
+```{r step_by_step}
+x <- as.matrix(voom$E)
+nsamples <- ncol(x)
+nprobes <- nrow(x)
+cn <- colnames(x)
+gene.selection = "pairwise"
+# Technically, there is a test to make sure there are >= 500 genes in the matrix
+# Here, I'm putting 500 because I know there are more and to simplify code
+top = 500
+topindex <- nprobes-top+1
+
+#	Now, we generate a distance matrix from pairwise leading fold changes
+dd <- matrix(0,nrow=nsamples,ncol=nsamples,dimnames=list(cn,cn))
+topindex <- nprobes-top+1
+if(gene.selection=="pairwise") {
+#	Distance measure is sqrt mean of top 500 squared deviations 
+# for each pair of arrays
+  for (i in 2:(nsamples))
+  for (j in 1:(i-1))
+    dd[i,j]=sqrt(mean(sort.int((x[,i]-x[,j])^2,partial=topindex)[topindex:nprobes]))
+}
+# Check that the values are, in fact, the same
+if (all(dd==mds$distance.matrix)){
+  print("All values are the same")
+}
+
+# Number of dimensions requested is 2 by default
+ndim = 2
+# Actual Multi-dimensional scaling command
+a1 <- cmdscale(as.dist(dd),k=ndim)
+
+print(a1)
+
+# Again, compare to our PCs from above
+if (all(a1==mds$cmdscale.out)){
+  print("Same PCs as provided by plotMDS")
+}
+```
+
+Now, of course, we expected all of the values to be the same since I just copied the code over from plotMDS. However, the goal here was to see the few lines responsible for determining the pairwise top 500 genes of choice since it was difficult to conceptualize what was happening.
+
+
+
+
+
