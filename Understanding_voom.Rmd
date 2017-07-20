@@ -1,0 +1,116 @@
+---
+title: "Understanding_voom"
+author: "Lucas Boatwright"
+date: "5/12/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Voom
+
+This script was created to more fully understand how limma voom functions.
+
+```{r data}
+library("edgeR")
+library("airway")
+
+# Load data
+data(airway)
+d <- DGEList(assay(airway))
+samples <- colnames(d)
+dim(d)
+
+# Filter at a minimum of 10 Counts-per-million
+keep <- rowSums(cpm(d) > cpm(10,mean(d$samples$lib.size))[1]) == 8
+d <- d[keep,]
+
+# Generate design matrix
+trt = factor(c(1,2,1,2,1,2,1,2), labels=c("untreated","treated"))
+design=model.matrix(~0 + trt)
+```
+
+Below, I've taken the basic portions of the voom function and explained what's happening in each command. Portions of the function were removed and the remaining code functions with the assumption that the design matrix is appropriate, expression matrix is a DGElist and there is no normalization.
+
+```{r voom_simplified}
+span = 0.5 # Function default
+# Get library size
+lib.size <- colSums(d$counts)
+# Generate output list
+out <- list()
+# Get gene names from DGE list
+out$genes <- d$genes
+# Get sample names from DGE list
+out$targets <- d$samples
+# Get log2 CPM
+y <- t(log2(t(d$counts + 0.5)/(lib.size + 1) * 1e+06))
+# Fit log2-CPM ~ design
+# This is a genewise linear model fit to expression data using least squares
+fit <- lmFit(y, design)
+# Get fit mean as log2 counts -- converted back from log2-CPM
+sx <- fit$Amean + mean(log2(lib.size + 1)) - log2(1e+06)
+# Get fit std dev -- relative to log2-CPM
+sy <- sqrt(fit$sigma)
+
+# Fit lowess
+l <- lowess(sx, sy, f = span)
+# l contain both x and y coordinates for lowess fit
+# approxfun -- Returns a list of points which linearly interpolate given data points
+# rule 2, the value at the closest data extreme is used
+f <- approxfun(l, rule = 2)
+
+# If the number of groups in the fit is less than the number of columns
+if (fit$rank < ncol(design)) {
+  # If less, get those pivot values
+  j <- fit$pivot[1:fit$rank]
+  # Duplicate the coefficienct columns pivot-times
+  fitted.values <- fit$coef[, j, drop = FALSE] %*% t(fit$design[, 
+                                                                j, drop = FALSE])
+} else {
+  # Duplicate the coefficient columns according to the design matrix columns
+  # Which is expressed as log2-CPM
+  fitted.values <- fit$coef %*% t(fit$design)
+}
+# Convert from log2-CPM to CPM
+fitted.cpm <- 2^fitted.values
+# Convert from CPM to counts
+fitted.count <- 1e-06 * t(t(fitted.cpm) * (lib.size + 1))
+# Convert from counts to log2-counts
+fitted.logcount <- log2(fitted.count)
+# Calculate inverse weights using the linear interpolation generated from the lowess fit on the log2-counts
+# A weight is inverse variance not Sqrt(STDEV), so it's to the fourth power
+w <- 1/f(fitted.logcount)^4
+# This is probably a check to make sure the dimensions are the same...
+dim(w) <- dim(fitted.logcount)
+# Output expression is log2-CPM
+out$E <- y
+# Weights are inverse variance
+out$weights <- w
+# Design matrix
+out$design <- design
+
+# Output targets are sample names with associated library sizes
+if (is.null(out$targets)) {
+  out$targets <- data.frame(lib.size = lib.size)
+} else {out$targets$lib.size <- lib.size}
+
+# I moved the plot to the bottom of the function since it's self-explanatory after going through the function
+# Plot voom mean-variance trend -- assuming voom(d, plot=TRUE)
+plot = TRUE
+if (plot) {
+  # sx = log2 counts, sy = Sqrt( log2-CPM STDEV )
+  plot(sx, sy, xlab = "log2( count size + 0.5 )", ylab = "Sqrt( standard deviation )", 
+       pch = 16, cex = 0.25)
+  title("voom: Mean-variance trend")
+  lines(l, col = "red")
+}
+
+
+
+```
+
+```{r session_info}
+sessionInfo()
+```
