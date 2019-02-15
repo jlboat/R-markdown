@@ -1,0 +1,307 @@
+---
+output: 
+    html_document:
+        toc: true
+        number_sections: true
+params:
+    project:
+        label: "Project Name"
+        value: current_project
+    stringtie_path:
+        label: "Path to StringTie output"
+        value: ./
+    data_matrix: 
+        label: "Input dataset:"
+        value: data_matrix.csv
+    sample_names:
+        label: "Sample Names (match data matrix order):"
+        value: control1,control2,control3,treatment1,treatment2,treatment3
+    sample_labels:
+        label: "Sample Labels:"
+        value: control,treatment
+    replicates:
+        label: "Replicates (in sample-label order)"
+        value: 1,1,1,2,2,2
+    contrasts:
+        label: "Contrasts (as comma-separated list)"
+        value: treatment-control
+
+title: "`r params$project`"
+author: "J. Lucas Boatwright"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r imports, echo=FALSE}
+library(limma, quietly = TRUE)
+library(edgeR, quietly = TRUE)
+library(Glimma, quietly = TRUE)
+library(tximport, quietly = TRUE)
+library(readr, quietly = TRUE)
+library(tidyr, quietly = TRUE)
+library(RColorBrewer, quietly = TRUE)
+library(DT, quietly = TRUE)
+library(knitr, quietly = TRUE)
+library(rmarkdown, quietly = TRUE)
+library(ComplexHeatmap, quietly=TRUE)
+```
+
+
+```{r data, echo=FALSE, message=FALSE}
+# Read data from stringtie
+files <- file.path(params$stringtie_path, strsplit(params$sample_names,",")[[1]], "t_data.ctab")
+tmp <- read_tsv(files[1])
+tx2gene <- tmp[, c("t_name","gene_name")]
+txi <- tximport(files, 
+                type= "stringtie", 
+                tx2gene = tx2gene, 
+                txOut = TRUE,
+                countsFromAbundance = "scaledTPM")
+```
+
+
+```{r dge, echo=FALSE}
+#txi$counts[is.na(txi$counts)] <- 0
+dge <- DGEList(txi$counts)
+cpm = cpm(dge)
+lcpm = cpm(dge, log = TRUE)
+keep <- filterByExpr(dge)
+dge <- dge[keep,]
+dge <- calcNormFactors(dge)
+nsamples <- ncol(dge)
+```
+
+# Sample Expression -- pre- and post-filtering
+
+```{r filter_plot, out.width=500, out.height=500, echo=FALSE, message=FALSE, warning=FALSE}
+figure_dir <- "DGE_figures"
+dir.create(figure_dir)
+samplenames <- strsplit(params$sample_names,',')[[1]]
+jpeg(paste(figure_dir,"/sample_filtering.jpeg", sep=""))
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+#par(mar=c(4,4,2,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2,
+             main = "", xlab = "")
+title(main="Raw data", xlab = "Log-CPM")
+abline(v=0, lty=3)
+for (i in 2:nsamples){
+  den <- density(lcpm[,i])
+  lines(den$x, den$y, col = col[i], lwd = 2)
+}
+legend("topright", samplenames, text.col = col, bty = "n")
+
+lcpm <- cpm(dge, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2,
+             main = "", xlab = "")
+title(main="Filtered data", xlab = "Log-CPM")
+abline(v=0, lty=3)
+for (i in 2:nsamples){
+  den <- density(lcpm[,i])
+  lines(den$x, den$y, col = col[i], lwd = 2)
+}
+legend("topright", samplenames, text.col = col, bty = "n")
+junk <- dev.off()
+knitr::include_graphics(paste(figure_dir,"/sample_filtering.jpeg", sep=""))
+```
+
+
+# Visualize expression distributions across samples
+
+## pre-normalization     --     post-normalization
+
+```{r boxplot, echo=FALSE, out.width=500, out.height=500}
+jpeg(paste(figure_dir,"/unnormalized_expression_boxplots.jpeg",sep=""))
+par(mar = c(12, 5, 4, 2)+ 0.1)
+boxplot(lcpm, las=2, col=col, names = samplenames, main="", ylab="log2-CPM")
+junk <- dev.off()
+
+```
+
+```{r voom, echo=FALSE, out.width="50%", out.height=500}
+### Create treatment factor variable and set design
+trt <- factor(as.numeric(strsplit(params$replicates,',')[[1]]), labels = strsplit(params$sample_labels,',')[[1]])
+design <- model.matrix(~0 + trt)
+
+### Build overall model.
+#   The mean-variance trend plot is a quality control plot to see how a gene's variance changes with respect to its mean. As voom uses linear models to determine differentially expressed genes (which assume homogeneity of variance), it is important that voom estimates precision weights from the mean-variance trend to account heteroscedasticity (non-homogeneity of variance) before checking for differences between samples.
+
+jpeg(paste(figure_dir,"/voom.jpeg",sep=""))
+voom <- voom(dge, design, plot = T)
+junk <- dev.off()
+# knitr::include_graphics(paste(figure_dir,"/voom.jpeg",sep=""))
+
+jpeg(paste(figure_dir,"/normalized_expression_boxplots.jpeg",sep=""))
+par(mar = c(12, 5, 4, 2)+ 0.1)
+boxplot(voom$E, las=2, col=col, names = samplenames, main="", ylab="log2-CPM")
+junk <- dev.off()
+knitr::include_graphics(c(paste(figure_dir,"/unnormalized_expression_boxplots.jpeg",sep=""), paste(figure_dir,"/normalized_expression_boxplots.jpeg",sep="")))
+
+```
+
+# Multidimensional Scaling plot
+
+    The MDS plot is a dimensionality reduction plot (similar to PCA -- principal component analysis) that projects sample variance onto a 2-dimensional plane. This allows use to visually determine the differences among samples (i.e. to see how they cluster). Ideally, replicates -- and other similar samples -- will cluster.
+
+<a href="./glimma-plots/MDS-Plot.html" target="_blank">Interactive MDS</a>
+
+```{r mds, echo=FALSE, out.width=500, out.height=500}
+col.group <- trt
+levels(col.group) <- brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+
+jpeg(paste(figure_dir,"/MDS_clustering.jpeg",sep=""))
+plotMDS(voom, main="MDS plot", labels = samplenames, col = col.group)
+junk <- dev.off()
+knitr::include_graphics(paste(figure_dir,"/MDS_clustering.jpeg",sep=""))
+
+glMDSPlot(voom, main="MDS plot", launch = FALSE, groups = trt)
+
+fit <- lmFit(voom,design)
+efit = eBayes(fit)
+jpeg(paste(figure_dir,"/voom_residuals.jpeg",sep=""))
+plotSA(efit)
+junk <- dev.off()
+# knitr::include_graphics(paste(figure_dir,"/voom_residuals.jpeg",sep=""))
+summary(decideTests(efit))
+```
+
+# DataTable for the ANOVA
+
+    Data may be exported from data tables using whichever format is desired (just press the appropriate button). Filtering may be applied for each column underneath the column header. To filter for FDR <= 0.05 you would type 0...0.05 under header adj.P.Val
+
+```{r datatable, echo=FALSE}
+top <- topTable(efit,coef=ncol(design),number=Inf)
+top <- top[,colnames(top) %in% c("logFC","AveExpr","P.Value","adj.P.Val")]
+#head(top)
+save(top, file = "top.RData")
+
+junk <- render(input="dataTable.Rmd", output_format="html_document",
+       output_file = paste(params$project,".ANOVA.html",sep=""),
+       params = list(file_name=paste(params$project,".ANOVA",sep="")),
+       quiet = TRUE,
+       envir = new.env())
+junk <- file.remove("top.RData")
+# Outside code block
+# [ANOVA Data](./`r paste(params$project,".ANOVA.html",sep="")`)
+```
+
+<a href="`r paste(params$project,".ANOVA.html",sep="")`" target="_blank">ANOVA Data</a>
+
+```{r contrast_function, echo=FALSE, out.width=500, out.height=500}
+pairwiseContrast <- function(pair){
+### Pairwise contrast function
+
+treatment_control <- strsplit(pair,'-')[[1]]
+treatment <- treatment_control[1]
+control <- treatment_control[2]
+
+# cat(paste(treatment," vs ",control,sep=""))
+
+contrast.matrix <- makeContrasts(contrasts = paste("trt",treatment,"-trt",control, sep=""), levels = design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+dt <- decideTests(fit2)
+summary(dt)
+
+jpeg(paste(figure_dir,"/QQ_", treatment, "-", control, ".jpeg",sep=""))
+qqt(fit2$t, df=fit2$df.prior+fit2$df.residual,pch=16,cex=0.2,main=paste(treatment," vs ",control," Q-Q plot",sep=""))
+abline(0,1)
+junk <- dev.off()
+# knitr::include_graphics(paste(figure_dir,"/QQ_", treatment, "-", control, ".jpeg",sep=""))
+
+top <- topTable(fit2, sort="none", n=Inf, coef=ncol(contrast.matrix))
+jpeg(paste(figure_dir,"/MD_", treatment, "-", control, ".jpeg",sep=""))
+plotMD(fit2, column=1, status = dt[,1], main=colnames(fit2)[1])
+abline(h = 0)
+junk <- dev.off()
+
+glMDPlot(fit2, status=dt, counts = voom, groups = trt, main=colnames(fit2)[1], launch = FALSE, sample.cols = col.group)
+
+jpeg(paste(figure_dir, "/Volcanoplot_", treatment, "-", control, ".jpeg",sep=""))
+with(top, plot(logFC, -log10(adj.P.Val), pch=20, main=""))
+abline(h = -log10(0.05), col = "blue", lty=2, lwd=1)
+abline(v = c(-1,1), col = "blue", lty=2, lwd=1)
+with(subset(top, adj.P.Val < 0.05), points(logFC, -log10(adj.P.Val), pch=20, col="gray"))
+with(subset(top, logFC < -1 & adj.P.Val <= 0.05), 
+     points(logFC, -log10(adj.P.Val), pch=20, col="green"))
+with(subset(top, logFC > 1 & adj.P.Val <= 0.05), 
+     points(logFC, -log10(adj.P.Val), pch=20, col="red"))
+junk <- dev.off()
+
+glXYPlot(fit2$coefficients, y=fit2$lods, xlab="logFC", ylab="logodds", status=dt, counts=voom, groups=trt, samples = trt, sample.cols = col.group, launch = FALSE)
+
+print(paste("DE_UP: ", sum(top[top$adj.P.Val <= 0.05,]$logFC > 0), sep=""))
+print(paste("DE_DOWN: ", sum(top[top$adj.P.Val <= 0.05,]$logFC < 0), sep=""))
+print(paste("TOTAL: ", length(top[top$adj.P.Val <= 0.05,]$t), sep=""))
+
+top <- top[,colnames(top) %in% c("logFC","AveExpr","P.Value","adj.P.Val")]
+
+save(top, file = "top.RData")
+
+junk <- render(input="dataTable.Rmd", output_format="html_document",
+       output_file = paste(params$project,".", pair, ".html",sep=""),
+       params = list(file_name=paste(params$project,".", pair,sep="")),
+       quiet = TRUE,
+       envir = new.env())
+junk <- file.remove("top.RData")
+
+
+sorted_top <- top[order(top$logFC, decreasing = T),]
+sorted_top <- sorted_top[sorted_top$adj.P.Val <= 0.05,]
+genes <- head(rownames(sorted_top),n=25)
+genes <- c(genes, tail(rownames(sorted_top),n=25))
+top_50_genes <- voom$E[genes,] 
+
+if (length(top_50_genes) != 0){
+  jpeg(paste(figure_dir, "/Heatmap_Top25Bottom25logFC_", treatment, "-", control, ".jpeg",sep=""))
+  Heatmap(top_50_genes, row_names_gp = gpar(fontsize = 6), 
+          column_names_gp = gpar(fontsize = 8),
+          cluster_columns = F, row_title_gp = gpar(fontsize = 10),
+          column_title_gp = gpar(fontsize=10), name="", column_title = "Top 25 and Bottom 25 logFC DE genes")
+  junk <- dev.off()
+}
+} # END pairwise Contrast
+```
+
+# Pairwise contrasts
+
+## Cre-GFP
+
+```{r contrast1, echo=FALSE, message=FALSE, warning=FALSE}
+all_contrasts <- strsplit(params$contrasts,',')[[1]]
+pairwiseContrast(all_contrasts[1])
+```
+
+<a href="`r paste(params$project,".", all_contrasts[1], ".html",sep="")`" target="_blank">Cre-GFP Data</a>
+
+### Cre-GFP Mean-difference plot
+
+<a href="./glimma-plots/MD-Plot.html" target="_blank">Interactive MD-Plot</a>
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE, out.width=500, out.height=500}
+treatment_control <- strsplit(all_contrasts[1],'-')[[1]]
+treatment <- treatment_control[1]
+control <- treatment_control[2]
+knitr::include_graphics(paste(figure_dir,"/MD_", treatment, "-", control, ".jpeg",sep=""))
+```
+
+### Cre-GFP Volcano plot
+
+<a href="./glimma-plots/XY-Plot.html" target="_blank">Interactive Volcano Plot</a>
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE, out.width=500, out.height=500}
+knitr::include_graphics(paste(figure_dir, "/Volcanoplot_", treatment, "-", control, ".jpeg",sep=""))
+```
+
+
+# Get session information
+
+```{r}
+Sys.time()
+sessionInfo()
+```

@@ -1,0 +1,28 @@
+---
+title: "DataTable"
+author: "J. Lucas Boatwright"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    html_document
+params:
+    file_name: 
+        label: "Output dataset:"
+        value: data_matrix
+---
+
+```{r startup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r autodatatable, echo=FALSE}
+load("top.RData")
+# DT
+datatable(
+    top, filter="top", extensions = 'Buttons', options = list(
+      dom = 'Bfrtip',
+      buttons = list(list(extend ='csv', filename=params$file_name), list(extend='excel', filename=params$file_name), list(extend='pdf', filename=params$file_name)),
+      fixedHeader = TRUE,
+      scroller = TRUE
+      ), width="100%"
+)
+```
